@@ -1,0 +1,47 @@
+# config/pipeline_config.yaml
+
+study_area:
+  name: "LA Wildfires 2025"
+  events:
+    eaton:
+      bbox: [-118.17, 34.14, -118.03, 34.24]  # lon_min, lat_min, lon_max, lat_max
+      name: "Eaton Fire"
+    palisades:
+      bbox: [-118.62, 34.02, -118.48, 34.12]
+      name: "Palisades Fire"
+  combined_bbox: [-118.62, 34.02, -118.03, 34.24]  # covers both events for scene download
+
+scenes:
+  pre:
+    - "2024-12-09"
+    - "2024-12-21"
+    - "2025-01-02"
+  post:
+    - "2025-01-14"
+    - "2025-01-26"
+    - "2025-02-07"
+  collection: "SENTINEL-1"
+  product_type: "IW_GRDH_1S"
+
+processing:
+  crs: 32611           # EPSG:32611 UTM Zone 11N
+  spacing: 20          # output pixel spacing in metres
+  polarizations:
+    - "VV"
+    - "VH"
+  dem: "SRTM 1Sec HGT"
+  speckle_filter_size: 7
+
+change_detection:
+  threshold_combined_db: 3.0   # initial value, calibrated in validation step
+
+aws:
+  bucket: "sam-sar-wildfire"
+  prefix: "la-wildfires-2025"
+  region: "eu-north-1"
+
+paths:
+  raw_scenes: "data/raw"
+  rtc_output: "data/rtc"
+  external: "data/external"
+  snap_aux: "C:/Users/swill/.snap/auxdata"  # SNAP auxiliary data directory
