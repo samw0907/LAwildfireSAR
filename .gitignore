@@ -1,0 +1,17 @@
+# credentials
+config/.env
+config/gee-service-account.json
+
+# data (large files, not committed)
+data/raw/
+data/rtc/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# outputs
+outputs/
