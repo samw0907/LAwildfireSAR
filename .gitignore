@@ -14,4 +14,7 @@ __pycache__/
 venv/
 
 # outputs
-outputs/
+# processed data outputs
+data/analysis/
+data/rtc/
+data/raw/
