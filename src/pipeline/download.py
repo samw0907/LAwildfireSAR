@@ -57,11 +57,26 @@ def search_scene(bbox, date_str, orbit_direction, config):
 
 def select_orbit_direction(bbox, all_dates, config, token):
     """
-    Check coverage for both ASCENDING and DESCENDING across all dates.
-    Returns the orbit direction with complete coverage.
-    Prefers DESCENDING if both are complete.
-    Raises an error if neither direction has complete coverage.
+    If orbit_direction is specified in config, use it directly after verifying coverage.
+    Otherwise check both directions and select the one with complete coverage.
     """
+    forced_direction = config["scenes"].get("orbit_direction", None)
+
+    if forced_direction:
+        print(f"Orbit direction forced in config: {forced_direction}")
+        missing = []
+        for date_str in all_dates:
+            result = search_scene(bbox, date_str, forced_direction, config)
+            if not result:
+                missing.append(date_str)
+        if missing:
+            raise RuntimeError(
+                f"Forced orbit direction {forced_direction} missing scenes for: {missing}"
+            )
+        print(f"All {len(all_dates)} dates confirmed for {forced_direction}")
+        return forced_direction
+
+    # No forced direction — check both and select complete one
     print("Checking orbit direction coverage across all dates...")
     candidates = ["DESCENDING", "ASCENDING"]
     coverage = {}
@@ -79,13 +94,11 @@ def select_orbit_direction(bbox, all_dates, config, token):
         print(f"  {direction}: {len(found)}/{len(all_dates)} dates found"
               + (f" — missing: {missing}" if missing else " — complete"))
 
-    # Select direction with complete coverage, prefer DESCENDING
     for direction in candidates:
         if not coverage[direction]["missing"]:
             print(f"\nSelected orbit direction: {direction}")
             return direction
 
-    # Neither complete — raise with detail
     raise RuntimeError(
         f"Neither orbit direction has complete scene coverage.\n"
         f"DESCENDING missing: {coverage['DESCENDING']['missing']}\n"

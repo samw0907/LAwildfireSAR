@@ -2,14 +2,18 @@
 
 study_area:
   name: "LA Wildfires 2025"
+  combined_bbox: [-118.70, 34.02, -117.98, 34.25]
   events:
     eaton:
-      bbox: [-118.17, 34.14, -118.03, 34.24]  # lon_min, lat_min, lon_max, lat_max
+      bbox: [-118.17, 34.14, -117.98, 34.24]
       name: "Eaton Fire"
+      swath_coverage_pct: 87
+      coverage_note: "Eastern ~13% of perimeter outside Sentinel-1 ascending swath edge"
     palisades:
       bbox: [-118.62, 34.02, -118.48, 34.12]
       name: "Palisades Fire"
-  combined_bbox: [-118.62, 34.02, -118.03, 34.24]  # covers both events for scene download
+      swath_coverage_pct: 100
+      coverage_note: "Full perimeter coverage"
 
 scenes:
   pre:
@@ -22,6 +26,7 @@ scenes:
     - "2025-02-07"
   collection: "SENTINEL-1"
   product_type: "IW_GRDH_1S"
+  orbit_direction: "ASCENDING"
 
 processing:
   crs: 32611           # EPSG:32611 UTM Zone 11N

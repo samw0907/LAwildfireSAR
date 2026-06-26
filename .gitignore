@@ -13,8 +13,12 @@ __pycache__/
 .venv/
 venv/
 
-# outputs
-# processed data outputs
-data/analysis/
-data/rtc/
+# data outputs
 data/raw/
+data/rtc/
+data/analysis/
+data/vectors/
+data/validation/
+
+# external data files - large, downloaded manually
+data/external/
