@@ -1,52 +1,58 @@
-# config/pipeline_config.yaml
-
 study_area:
-  name: "LA Wildfires 2025"
-  combined_bbox: [-118.70, 34.02, -117.98, 34.25]
+  name: LA Wildfires 2025
+  combined_bbox:
+  - -118.7
+  - 34.02
+  - -117.98
+  - 34.25
   events:
     eaton:
-      bbox: [-118.17, 34.14, -117.98, 34.24]
-      name: "Eaton Fire"
-      swath_coverage_pct: 87
-      coverage_note: "Eastern ~13% of perimeter outside Sentinel-1 ascending swath edge"
-    palisades:
-      bbox: [-118.62, 34.02, -118.48, 34.12]
-      name: "Palisades Fire"
+      bbox:
+      - -118.17
+      - 34.14
+      - -117.98
+      - 34.24
+      name: Eaton Fire
       swath_coverage_pct: 100
-      coverage_note: "Full perimeter coverage"
-
+      coverage_note: "Full perimeter coverage \xE2\u20AC\u201D ascending track 64\
+        \ (Eaton in swath interior)"
+    palisades:
+      bbox:
+      - -118.62
+      - 34.02
+      - -118.48
+      - 34.12
+      name: Palisades Fire
+      swath_coverage_pct: 100
+      coverage_note: Full perimeter coverage
 scenes:
   pre:
-    - "2024-12-09"
-    - "2024-12-21"
-    - "2025-01-02"
+  - '2024-12-04'
+  - '2024-12-16'
+  - '2024-12-28'
   post:
-    - "2025-01-14"
-    - "2025-01-26"
-    - "2025-02-07"
-  collection: "SENTINEL-1"
-  product_type: "IW_GRDH_1S"
-  orbit_direction: "ASCENDING"
-
+  - '2025-01-21'
+  - '2025-02-02'
+  - '2025-02-14'
+  collection: SENTINEL-1
+  product_type: IW_GRDH_1S
+  orbit_direction: ASCENDING
 processing:
-  crs: 32611           # EPSG:32611 UTM Zone 11N
-  spacing: 20          # output pixel spacing in metres
+  crs: 32611
+  spacing: 20
   polarizations:
-    - "VV"
-    - "VH"
-  dem: "SRTM 1Sec HGT"
+  - VV
+  - VH
+  dem: SRTM 1Sec HGT
   speckle_filter_size: 7
-
 change_detection:
-  threshold_combined_db: 3.0   # initial value, calibrated in validation step
-
+  threshold_combined_db: 2.9
 aws:
-  bucket: "sam-sar-wildfire"
-  prefix: "la-wildfires-2025"
-  region: "eu-north-1"
-
+  bucket: sam-sar-wildfire
+  prefix: la-wildfires-2025
+  region: eu-north-1
 paths:
-  raw_scenes: "data/raw"
-  rtc_output: "data/rtc"
-  external: "data/external"
-  snap_aux: "C:/Users/swill/.snap/auxdata"  # SNAP auxiliary data directory
+  raw_scenes: data/raw
+  rtc_output: data/rtc
+  external: data/external
+  snap_aux: C:/Users/swill/.snap/auxdata

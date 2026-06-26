@@ -7,6 +7,11 @@ from shapely.geometry import box
 from src.utils.config import load_config
 from rasterstats import zonal_stats
 
+# Buildings where mean local incidence angle exceeds this threshold are flagged
+# as geometry_limited. Above ~60° the terrain slope significantly reduces radar
+# illumination, making backscatter an unreliable indicator of structural damage.
+LIA_THRESHOLD_DEG = 60.0
+
 
 def load_perimeter(path, target_crs):
     """Load a fire perimeter GeoJSON and reproject to target CRS."""
@@ -66,11 +71,73 @@ def extract_mean_change(buildings_gdf, change_raster_path):
     return buildings_gdf
 
 
+def find_lia_file(rtc_dir, pre_dates):
+    """
+    Find a local incidence angle TIF in rtc_dir, preferring the first pre-event
+    date. LIA is a geometric property of orbit + terrain — all scenes from the
+    same track are effectively identical, so one file represents all.
+    """
+    date_compact = pre_dates[0].replace("-", "")[:8]
+    matches = [
+        f for f in os.listdir(rtc_dir)
+        if date_compact in f and "localIncidenceAngle" in f and f.endswith(".tif")
+    ]
+    if not matches:
+        # Fall back to any LIA file present
+        matches = [
+            f for f in os.listdir(rtc_dir)
+            if "localIncidenceAngle" in f and f.endswith(".tif")
+        ]
+    return os.path.join(rtc_dir, matches[0]) if matches else None
+
+
+def flag_geometry_limited(buildings_gdf, lia_raster_path):
+    """
+    Sample the mean local incidence angle (LIA) per building footprint and
+    override damage_class to 'geometry_limited' where LIA > LIA_THRESHOLD_DEG.
+
+    High LIA indicates the building sits on terrain facing away from the radar
+    (shadow / layover risk), where backscatter is unreliable for damage assessment.
+    The mean_lia column is retained in the output for QA purposes.
+    """
+    print(f"  Flagging buildings in high-incidence-angle zones (LIA > {LIA_THRESHOLD_DEG}°)...")
+
+    with rasterio.open(lia_raster_path) as src:
+        lia_crs = src.crs
+
+    buildings_reproj = buildings_gdf.to_crs(lia_crs)
+
+    lia_stats = zonal_stats(
+        buildings_reproj,
+        lia_raster_path,
+        stats=["mean"],
+        nodata=np.nan,
+        geojson_out=False
+    )
+
+    buildings_gdf = buildings_gdf.copy()
+    buildings_gdf["mean_lia"] = [
+        s["mean"] if s["mean"] is not None else np.nan
+        for s in lia_stats
+    ]
+
+    n_before = (buildings_gdf["damage_class"] != "geometry_limited").sum()
+    buildings_gdf.loc[
+        buildings_gdf["mean_lia"] > LIA_THRESHOLD_DEG, "damage_class"
+    ] = "geometry_limited"
+    n_flagged = (buildings_gdf["damage_class"] == "geometry_limited").sum()
+
+    print(f"  Flagged {n_flagged} buildings as geometry_limited "
+          f"({100 * n_flagged / len(buildings_gdf):.1f}% of total)")
+
+    return buildings_gdf
+
+
 def classify_damage(buildings_gdf, config):
     """
     Classify buildings into damage categories based on mean change value.
     Classes: destroyed, possibly_affected, no_damage, no_data.
-    Thresholds from config.
+    Thresholds from config — calibrated threshold written back by validate.py.
     """
     threshold_high = config["change_detection"]["threshold_combined_db"]
     threshold_low = threshold_high * 0.6
@@ -111,6 +178,8 @@ def run_buildings(config=None):
     buildings_path = os.path.join(
         "data", "external", "California.geojson", "California.geojson"
     )
+    rtc_dir = config["paths"]["rtc_output"]
+    pre_dates = config["scenes"]["pre"]
 
     events = {
         "eaton": "data/external/eaton_perimeter.geojson",
@@ -169,10 +238,19 @@ def run_buildings(config=None):
     print("Extracting mean backscatter change per building...")
     all_buildings = extract_mean_change(all_buildings, change_raster)
 
-    # Classify damage
+    # Classify damage using threshold from config
     print("Classifying damage...")
     all_buildings = classify_damage(all_buildings, config)
     all_buildings["area_m2"] = all_buildings.geometry.area
+
+    # Flag buildings in geometric shadow / layover zones using the local
+    # incidence angle raster produced during RTC processing
+    lia_path = find_lia_file(rtc_dir, pre_dates)
+    if lia_path:
+        print(f"  Using LIA raster: {os.path.basename(lia_path)}")
+        all_buildings = flag_geometry_limited(all_buildings, lia_path)
+    else:
+        print("  WARNING: No localIncidenceAngle raster found — skipping geometry flagging")
 
     results = {}
 
@@ -194,8 +272,6 @@ def run_buildings(config=None):
 
         print(f"\n{event_name}: {len(event_buildings)} buildings within perimeter")
         print(f"  Swath coverage: {event_config['swath_coverage_pct']}%")
-        if event_config["swath_coverage_pct"] < 100:
-            print(f"  WARNING: {event_config['coverage_note']}")
         print(event_buildings["damage_class"].value_counts())
 
         event_buildings.to_file(output_path, driver="GeoJSON")

@@ -47,10 +47,11 @@ def align_to_reference(src_path, ref_profile):
             return vrt.read(1)
 
 
-def build_composite(rtc_dir, dates, polarisation, output_path, config):
+def build_composite(rtc_dir, dates, polarisation, output_path, config, ref_profile=None):
     """
     Build a mean composite from multiple RTC scenes for a given polarisation.
-    Aligns all scenes to the first scene's grid before averaging.
+    Aligns all scenes to ref_profile's grid before averaging. If ref_profile is
+    not supplied, the first scene's grid is used.
     Writes output as GeoTIFF. Skips if output already exists.
     """
     if os.path.exists(output_path):
@@ -59,26 +60,28 @@ def build_composite(rtc_dir, dates, polarisation, output_path, config):
 
     print(f"  Building {polarisation} composite from {len(dates)} scenes...")
 
-    # Use first scene as reference grid
-    ref_path = find_rtc_file(rtc_dir, dates[0], polarisation)
-    with rasterio.open(ref_path) as ref:
-        ref_profile = ref.profile.copy()
-        ref_data = ref.read(1)
+    # Use supplied reference profile or derive from first scene
+    if ref_profile is None:
+        ref_path = find_rtc_file(rtc_dir, dates[0], polarisation)
+        with rasterio.open(ref_path) as ref:
+            ref_profile = ref.profile.copy()
 
-    stack = [ref_data]
+    stack = []
 
-    # Align remaining scenes to reference grid
-    for date_str in dates[1:]:
+    # Align every scene (including the first) to the reference grid
+    for date_str in dates:
         scene_path = find_rtc_file(rtc_dir, date_str, polarisation)
         aligned = align_to_reference(scene_path, ref_profile)
         stack.append(aligned)
 
-    # Pixel-wise mean, ignoring nodata
+    # Pixel-wise median, ignoring nodata.
+    # Median is more robust than mean to a single anomalous scene
+    # (e.g. a rain event causing wet-soil backscatter spike in one acquisition).
     stack_array = np.array(stack, dtype=np.float32)
     nodata = ref_profile.get("nodata", None)
     if nodata is not None:
         stack_array[stack_array == nodata] = np.nan
-    composite = np.nanmean(stack_array, axis=0)
+    composite = np.nanmedian(stack_array, axis=0)
 
     # Write output
     out_profile = ref_profile.copy()
@@ -108,6 +111,16 @@ def run_composites(config=None):
 
     composites = {}
 
+    # Establish a single master reference grid from the first pre-event VV scene.
+    # All four composites (pre/post × VV/VH) are aligned to this grid so that
+    # change.py can do pixel-wise subtraction on spatially registered arrays.
+    first_pre_path = find_rtc_file(rtc_dir, pre_dates[0], polarisations[0])
+    with rasterio.open(first_pre_path) as ref:
+        master_ref_profile = ref.profile.copy()
+    print(f"Master reference grid: {os.path.basename(first_pre_path)}")
+    print(f"  Origin: ({master_ref_profile['transform'].c:.1f}, {master_ref_profile['transform'].f:.1f})")
+    print(f"  Size: {master_ref_profile['width']} x {master_ref_profile['height']}")
+
     for pol in polarisations:
         print(f"\nBuilding composites for {pol}...")
 
@@ -115,10 +128,10 @@ def run_composites(config=None):
         post_path = os.path.join(out_dir, f"post_composite_{pol}.tif")
 
         composites[f"pre_{pol}"] = build_composite(
-            rtc_dir, pre_dates, pol, pre_path, config
+            rtc_dir, pre_dates, pol, pre_path, config, ref_profile=master_ref_profile
         )
         composites[f"post_{pol}"] = build_composite(
-            rtc_dir, post_dates, pol, post_path, config
+            rtc_dir, post_dates, pol, post_path, config, ref_profile=master_ref_profile
         )
 
     print("\nComposites complete.")

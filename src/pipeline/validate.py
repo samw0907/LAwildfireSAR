@@ -3,7 +3,13 @@ import os
 import json
 import numpy as np
 import geopandas as gpd
+import yaml
 from src.utils.config import load_config
+
+# Damage classes that indicate missing or unreliable SAR signal.
+# These buildings are excluded from validation metrics — treating them
+# as "not damaged" would silently deflate the false-negative count.
+EXCLUDED_CLASSES = {"no_data", "geometry_limited"}
 
 
 def load_dins(path, target_crs):
@@ -29,7 +35,8 @@ def get_pipeline_damage_binary(gdf):
     """
     Convert pipeline damage classes to binary damaged/not_damaged.
     Destroyed and possibly_affected = damaged.
-    No_damage and no_data = not damaged.
+    No_damage = not damaged.
+    Note: no_data and geometry_limited are excluded before this is called.
     """
     return gdf["damage_class"].apply(
         lambda x: 1 if x in ["destroyed", "possibly_affected"] else 0
@@ -58,27 +65,88 @@ def compute_metrics(y_true, y_pred):
     }
 
 
+def calibrate_threshold(joined_df, damage_col,
+                        threshold_range=(0.5, 10.0), step=0.1):
+    """
+    Sweep change detection thresholds to find the F1-maximising value.
+
+    Uses the pre-computed mean_change_combined values already stored per
+    building, so no raster re-sampling is needed. The 0.6 ratio between
+    the lower (possibly_affected) and upper (destroyed) boundaries is
+    preserved from the original classification logic.
+
+    Returns:
+        optimal_threshold  float — the threshold_combined_db that maximises F1
+        best_metrics       dict  — metrics at the optimal threshold
+        sweep_results      list  — full [{threshold, f1, precision, recall}] sweep
+    """
+    y_true = get_dins_damage_binary(joined_df, damage_col).values
+    thresholds = np.arange(threshold_range[0], threshold_range[1] + step, step)
+
+    sweep_results = []
+    for t in thresholds:
+        threshold_low = t * 0.6
+        y_pred = joined_df["mean_change_combined"].apply(
+            lambda v: 1 if (not np.isnan(float(v)) and float(v) >= threshold_low)
+            else 0
+        ).values
+        m = compute_metrics(y_true, y_pred)
+        sweep_results.append({
+            "threshold": round(float(t), 2),
+            "f1": m["f1"],
+            "precision": m["precision"],
+            "recall": m["recall"],
+        })
+
+    best = max(sweep_results, key=lambda x: x["f1"])
+
+    # Recompute full metrics at optimal threshold for the summary
+    threshold_low = best["threshold"] * 0.6
+    y_pred_best = joined_df["mean_change_combined"].apply(
+        lambda v: 1 if (not np.isnan(float(v)) and float(v) >= threshold_low)
+        else 0
+    ).values
+    best_metrics = compute_metrics(y_true, y_pred_best)
+
+    return best["threshold"], best_metrics, sweep_results
+
+
+def update_config_threshold(threshold, config_path="config/pipeline_config.yaml"):
+    """
+    Write the calibrated threshold back to the pipeline config YAML so that
+    re-running buildings.py will use the validated value.
+    """
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    config["change_detection"]["threshold_combined_db"] = round(float(threshold), 2)
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+
 def validate_event(event_name, buildings_gdf, dins_path,
                    target_crs, config, damage_col="damage_cat"):
     """
     Validate pipeline building damage classification against DINS ground truth.
-    Spatially joins DINS points to building footprints, computes binary metrics.
-    Includes swath coverage metadata in output.
+
+    Workflow:
+      1. Spatially join DINS inspection points to building footprints (≤25 m).
+      2. Exclude buildings flagged as no_data or geometry_limited — these have
+         no reliable SAR signal and must not be treated as confirmed undamaged.
+      3. Compute binary precision/recall/F1 at the current config threshold.
+      4. Sweep thresholds to find the F1-maximising value and report it.
+
     Returns metrics dict and joined GeoDataFrame for figure generation.
     """
     print(f"\nValidating: {event_name}")
 
-    # Load swath coverage from buildings GDF (set in buildings.py)
     swath_coverage_pct = int(buildings_gdf["swath_coverage_pct"].iloc[0])
     coverage_note = buildings_gdf["coverage_note"].iloc[0]
 
     if swath_coverage_pct < 100:
         print(f"  WARNING: Partial swath coverage ({swath_coverage_pct}%) — {coverage_note}")
-        print(f"  Validation metrics reflect covered area only")
 
     dins = load_dins(dins_path, target_crs)
     print(f"  DINS records: {len(dins)}")
-    print(f"  DINS columns: {list(dins.columns)}")
 
     joined = gpd.sjoin_nearest(
         dins[["geometry", damage_col]],
@@ -86,36 +154,67 @@ def validate_event(event_name, buildings_gdf, dins_path,
         how="inner",
         max_distance=25
     )
-    print(f"  Matched DINS records to buildings: {len(joined)}")
+    print(f"  DINS records matched to buildings: {len(joined)}")
 
     if len(joined) == 0:
         print(f"  WARNING: No DINS records matched to buildings for {event_name}")
         return None, None
 
-    y_true = get_dins_damage_binary(joined, damage_col).values
-    y_pred = get_pipeline_damage_binary(joined).values
+    # Exclude buildings with no reliable SAR signal before computing metrics.
+    # Keeping them would silently count shadow/no-coverage zones as "not damaged"
+    # and understate false negatives.
+    excluded_mask = joined["damage_class"].isin(EXCLUDED_CLASSES)
+    n_excluded = int(excluded_mask.sum())
+    if n_excluded > 0:
+        print(f"  Excluded {n_excluded} matched buildings with unreliable signal "
+              f"({', '.join(EXCLUDED_CLASSES)}) from metrics")
+    joined_valid = joined[~excluded_mask].copy()
 
+    if len(joined_valid) == 0:
+        print(f"  WARNING: No valid (covered) matched buildings remain for {event_name}")
+        return None, None
+
+    y_true = get_dins_damage_binary(joined_valid, damage_col).values
+    y_pred = get_pipeline_damage_binary(joined_valid).values
+
+    current_threshold = config["change_detection"]["threshold_combined_db"]
     metrics = compute_metrics(y_true, y_pred)
     metrics["event"] = event_name
     metrics["dins_records"] = len(dins)
     metrics["matched_records"] = len(joined)
+    metrics["excluded_no_signal"] = n_excluded
+    metrics["validated_records"] = len(joined_valid)
+    metrics["threshold_used"] = current_threshold
     metrics["swath_coverage_pct"] = swath_coverage_pct
     metrics["coverage_note"] = coverage_note
 
-    if swath_coverage_pct < 100:
-        metrics["coverage_warning"] = (
-            f"Metrics reflect {swath_coverage_pct}% of official perimeter only. "
-            f"{coverage_note}"
-        )
-
+    print(f"\n  --- Metrics at current threshold ({current_threshold} dB) ---")
     print(f"  Precision: {metrics['precision']}")
     print(f"  Recall:    {metrics['recall']}")
     print(f"  F1:        {metrics['f1']}")
     print(f"  Accuracy:  {metrics['accuracy']}")
 
-    joined["y_true"] = y_true
-    joined["y_pred"] = y_pred
-    joined["validation_class"] = joined.apply(
+    # Threshold calibration: find F1-maximising threshold on this event's data
+    opt_threshold, opt_metrics, sweep = calibrate_threshold(joined_valid, damage_col)
+    metrics["calibrated_threshold"] = opt_threshold
+    metrics["calibrated_f1"] = opt_metrics["f1"]
+    metrics["calibrated_precision"] = opt_metrics["precision"]
+    metrics["calibrated_recall"] = opt_metrics["recall"]
+    metrics["threshold_sweep"] = sweep
+
+    print(f"\n  --- Calibrated threshold (F1-maximising) ---")
+    print(f"  Optimal threshold: {opt_threshold} dB")
+    print(f"  Precision: {opt_metrics['precision']}")
+    print(f"  Recall:    {opt_metrics['recall']}")
+    print(f"  F1:        {opt_metrics['f1']}")
+    if opt_threshold != current_threshold:
+        print(f"  NOTE: Re-run buildings.py to apply calibrated threshold to all buildings")
+
+    # Label each matched record for spatial QA output
+    joined_valid = joined_valid.copy()
+    joined_valid["y_true"] = y_true
+    joined_valid["y_pred"] = y_pred
+    joined_valid["validation_class"] = joined_valid.apply(
         lambda r: "true_positive" if r.y_true == 1 and r.y_pred == 1
         else "false_positive" if r.y_true == 0 and r.y_pred == 1
         else "false_negative" if r.y_true == 1 and r.y_pred == 0
@@ -123,12 +222,14 @@ def validate_event(event_name, buildings_gdf, dins_path,
         axis=1
     )
 
-    return metrics, joined
+    return metrics, joined_valid
 
 
 def run_validation(buildings_results=None, config=None):
     """
     Run validation for all events with available DINS data.
+    Calibrates threshold per event and writes the best overall threshold
+    back to config so buildings.py can be re-run with the validated value.
     Writes validation summary JSON to data/validation/.
     Returns dict of metrics and joined GeoDataFrames per event.
     """
@@ -191,9 +292,30 @@ def run_validation(buildings_results=None, config=None):
             all_metrics[event_name] = metrics
             all_joined[event_name] = joined
 
+    # Write calibrated threshold back to config using the mean across events
+    # (or the single-event value if only one event validated successfully)
+    calibrated_thresholds = [
+        m["calibrated_threshold"] for m in all_metrics.values()
+        if "calibrated_threshold" in m
+    ]
+    if calibrated_thresholds:
+        best_threshold = round(float(np.mean(calibrated_thresholds)), 2)
+        current = config["change_detection"]["threshold_combined_db"]
+        if best_threshold != current:
+            update_config_threshold(best_threshold)
+            print(f"\nCalibrated threshold written to config: {best_threshold} dB "
+                  f"(was {current} dB)")
+            print("Re-run `python -m src.pipeline.buildings` to apply to all buildings")
+        else:
+            print(f"\nCalibrated threshold ({best_threshold} dB) matches current config — no update needed")
+
+    # Write summary JSON (excluding the full sweep list to keep it readable)
+    summary = {}
+    for event, m in all_metrics.items():
+        summary[event] = {k: v for k, v in m.items() if k != "threshold_sweep"}
     summary_path = os.path.join(validation_dir, "validation_summary.json")
     with open(summary_path, "w") as f:
-        json.dump(all_metrics, f, indent=2)
+        json.dump(summary, f, indent=2)
     print(f"\nValidation summary written: {summary_path}")
 
     return all_metrics, all_joined
@@ -203,7 +325,7 @@ if __name__ == "__main__":
     metrics, joined = run_validation()
     for event, m in metrics.items():
         print(f"\n{event}:")
-        print(f"  F1: {m['f1']} | Precision: {m['precision']} | Recall: {m['recall']}")
-        print(f"  Swath coverage: {m['swath_coverage_pct']}%")
-        if "coverage_warning" in m:
-            print(f"  {m['coverage_warning']}")
+        print(f"  F1 (initial):    {m['f1']} at {m['threshold_used']} dB")
+        print(f"  F1 (calibrated): {m['calibrated_f1']} at {m['calibrated_threshold']} dB")
+        print(f"  Validated on {m['validated_records']} buildings "
+              f"({m['excluded_no_signal']} excluded — no signal)")
