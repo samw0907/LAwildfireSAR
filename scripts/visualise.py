@@ -3,11 +3,15 @@
 Generate all visualisation outputs for the LA Wildfire SAR damage assessment.
 
 Outputs (outputs/figures/):
-  damage_map_eaton.png        building damage classification over basemap
-  damage_map_palisades.png    building damage classification over basemap
-  damage_map_combined.png     both fires, geographic context
-  validation_metrics.png      confusion matrices + precision/recall/F1 bars
-  change_signal_dist.png      SAR change signal distribution by DINS damage class
+  damage_map_eaton.png          building damage classification over basemap
+  damage_map_palisades.png      building damage classification over basemap
+  damage_map_combined.png       both fires, geographic context
+  validation_metrics.png        confusion matrices + precision/recall/F1 bars
+  change_signal_dist.png        SAR change signal distribution by DINS damage class
+  sar_panel_eaton.png           pre/post SAR backscatter + change raster, zoom view
+  sar_panel_palisades.png       pre/post SAR backscatter + change raster, zoom view
+  damage_zoom_eaton.png         zoomed building damage map, most-damaged neighbourhood
+  damage_zoom_palisades.png     zoomed building damage map, most-damaged neighbourhood
 """
 import os
 import json
@@ -17,6 +21,9 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
+from shapely.geometry import box
+import rasterio
+from rasterio.windows import from_bounds as win_from_bounds
 import contextily as ctx
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -357,6 +364,215 @@ def plot_change_signal_distribution(eaton_gdf, palisades_gdf,
     print(f"  Written: {output_path}")
 
 
+def _destroyed_centroid(buildings_gdf):
+    """Return (cx, cy) in the GDF's CRS centred on the destroyed building cluster."""
+    destroyed = buildings_gdf[buildings_gdf["damage_class"] == "destroyed"]
+    cx = destroyed.geometry.centroid.x.median()
+    cy = destroyed.geometry.centroid.y.median()
+    return cx, cy
+
+
+def _read_raster_window(path, xmin, ymin, xmax, ymax):
+    """
+    Read a raster clipped to the given bounding box (in the raster's CRS).
+    Returns (masked_array, extent_tuple) where extent = (left, right, bottom, top).
+    """
+    with rasterio.open(path) as src:
+        win = win_from_bounds(xmin, ymin, xmax, ymax, src.transform)
+        data = src.read(1, window=win)
+        t = src.window_transform(win)
+        left   = t.c
+        top    = t.f
+        right  = left + win.width  * abs(t.a)
+        bottom = top  - win.height * abs(t.e)
+    return np.ma.masked_invalid(data), (left, right, bottom, top)
+
+
+def plot_sar_panel(event_name, buildings_gdf, output_path, window_km=2.5):
+    """
+    3-panel figure centred on the most-damaged neighbourhood:
+      1. Pre-event gamma-nought VV backscatter (greyscale)
+      2. Post-event gamma-nought VV backscatter (greyscale, building outlines coloured by class)
+      3. Combined change magnitude raster (Reds) with filled building polygons
+
+    All panels share the same UTM extent — the raw SAR signal is the background
+    for panels 1 and 2, making the pre→post change directly visible.
+    """
+    cx, cy = _destroyed_centroid(buildings_gdf)
+    half   = window_km * 1000 / 2
+    xmin, xmax = cx - half, cx + half
+    ymin, ymax = cy - half, cy + half
+    bbox_utm   = box(xmin, ymin, xmax, ymax)
+
+    buildings_clip = buildings_gdf[buildings_gdf.intersects(bbox_utm)].copy()
+
+    pre_data,    pre_ext    = _read_raster_window(
+        "data/analysis/pre_composite_VV.tif",  xmin, ymin, xmax, ymax)
+    post_data,   post_ext   = _read_raster_window(
+        "data/analysis/post_composite_VV.tif", xmin, ymin, xmax, ymax)
+    change_data, change_ext = _read_raster_window(
+        "data/analysis/change_combined.tif",   xmin, ymin, xmax, ymax)
+
+    event_title = "Eaton Fire" if event_name == "eaton" else "Palisades Fire"
+
+    # Consistent backscatter stretch across pre and post
+    vmin_sar, vmax_sar = -14, -2
+
+    gray = plt.cm.gray.copy()
+    gray.set_bad("black")
+
+    fig, axes = plt.subplots(1, 3, figsize=(19, 7))
+
+    # --- Panel 1: Pre-event SAR, white building outlines ---
+    ax = axes[0]
+    ax.imshow(pre_data, cmap=gray, vmin=vmin_sar, vmax=vmax_sar,
+              extent=pre_ext, origin="upper", aspect="equal")
+    for geom in buildings_clip.geometry:
+        if geom.geom_type in ("Polygon", "MultiPolygon"):
+            coords = (geom if geom.geom_type == "Polygon" else geom.geoms[0]).exterior.xy
+            ax.plot(coords[0], coords[1], color="white", linewidth=0.5, alpha=0.7)
+    ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
+    ax.set_title("Pre-event SAR Backscatter\nγ⁰ VV · Dec 2024",
+                 fontsize=10, fontweight="bold")
+    ax.set_xlabel("Easting (m, UTM 11N)", fontsize=8)
+    ax.set_ylabel("Northing (m, UTM 11N)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    sm = plt.cm.ScalarMappable(cmap=gray,
+                               norm=plt.Normalize(vmin=vmin_sar, vmax=vmax_sar))
+    plt.colorbar(sm, ax=ax, label="γ⁰ VV (dB)", fraction=0.046, pad=0.04)
+
+    # --- Panel 2: Post-event SAR, building outlines coloured by damage class ---
+    ax = axes[1]
+    ax.imshow(post_data, cmap=gray, vmin=vmin_sar, vmax=vmax_sar,
+              extent=post_ext, origin="upper", aspect="equal")
+    for _, row in buildings_clip.iterrows():
+        geom = row.geometry
+        if geom.geom_type in ("Polygon", "MultiPolygon"):
+            coords = (geom if geom.geom_type == "Polygon" else geom.geoms[0]).exterior.xy
+            colour = DAMAGE_COLOURS.get(row["damage_class"], "white")
+            lw = 1.0 if row["damage_class"] in ("destroyed", "possibly_affected") else 0.5
+            ax.plot(coords[0], coords[1], color=colour, linewidth=lw, alpha=0.9)
+    ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
+    ax.set_title("Post-event SAR Backscatter\nγ⁰ VV · Jan–Feb 2025  (outlines = damage class)",
+                 fontsize=10, fontweight="bold")
+    ax.set_xlabel("Easting (m, UTM 11N)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    plt.colorbar(sm, ax=ax, label="γ⁰ VV (dB)", fraction=0.046, pad=0.04)
+    # Damage class legend
+    classes_present = [c for c in ["destroyed", "possibly_affected", "no_damage", "no_data"]
+                       if (buildings_clip["damage_class"] == c).any()]
+    ax.legend(handles=_damage_legend_handles(classes_present),
+              loc="lower right", fontsize=7, framealpha=0.88)
+
+    # --- Panel 3: Change magnitude raster + filled building polygons ---
+    ax = axes[2]
+    reds = plt.cm.Reds.copy()
+    reds.set_bad("lightgrey")
+    im_change = ax.imshow(change_data, cmap=reds, vmin=0, vmax=8,
+                          extent=change_ext, origin="upper", aspect="equal", alpha=0.75)
+    # Draw buildings filled by damage class, ordered so destroyed is on top
+    for cls in ["no_data", "no_damage", "possibly_affected", "destroyed"]:
+        subset = buildings_clip[buildings_clip["damage_class"] == cls]
+        if len(subset):
+            subset.plot(ax=ax, color=DAMAGE_COLOURS[cls], edgecolor="black",
+                        linewidth=0.3, alpha=0.88, zorder=3)
+    ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
+    ax.set_title("SAR Change Magnitude + Building Classification\nVV²+VH² combined · threshold 2.9 dB",
+                 fontsize=10, fontweight="bold")
+    ax.set_xlabel("Easting (m, UTM 11N)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    plt.colorbar(im_change, ax=ax, label="Change magnitude (dB)",
+                 fraction=0.046, pad=0.04)
+    ax.legend(handles=_damage_legend_handles(classes_present),
+              loc="lower right", fontsize=7, framealpha=0.88)
+
+    fig.suptitle(
+        f"{event_title} — SAR Imagery and Building Damage Classification  "
+        f"({window_km:.1f} km zoom, most-damaged neighbourhood)",
+        fontsize=12, fontweight="bold", y=1.01
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Written: {output_path}")
+
+
+def plot_damage_zoom(event_name, buildings_gdf, perimeter_gdf, output_path,
+                     window_km=2.5):
+    """
+    Zoomed building damage map centred on the most-damaged neighbourhood.
+    Uses a web-tile basemap so streets and structures are identifiable.
+    Individual building polygons are clearly visible at this scale.
+    """
+    cx, cy = _destroyed_centroid(buildings_gdf)
+    half   = window_km * 1000 / 2
+    xmin, xmax = cx - half, cx + half
+    ymin, ymax = cy - half, cy + half
+    bbox_utm   = box(xmin, ymin, xmax, ymax)
+
+    buildings_clip = buildings_gdf[buildings_gdf.intersects(bbox_utm)].copy()
+    buildings_wm   = _to_webmercator(buildings_clip)
+    perimeter_wm   = _to_webmercator(perimeter_gdf)
+
+    # Reproject bbox to web mercator for axis limits
+    from shapely.ops import transform
+    import pyproj
+    proj = pyproj.Transformer.from_crs(
+        buildings_gdf.crs, "EPSG:3857", always_xy=True).transform
+    bbox_wm  = transform(proj, bbox_utm)
+    bxmin, bymin, bxmax, bymax = bbox_wm.bounds
+
+    event_title = "Eaton Fire" if event_name == "eaton" else "Palisades Fire"
+
+    fig, ax = plt.subplots(figsize=(11, 10))
+
+    for cls in ["no_data", "no_damage", "possibly_affected", "destroyed"]:
+        subset = buildings_wm[buildings_wm["damage_class"] == cls]
+        if len(subset) == 0:
+            continue
+        alpha = 0.45 if cls == "no_data" else 0.88
+        subset.plot(ax=ax, color=DAMAGE_COLOURS[cls], edgecolor="black",
+                    linewidth=0.4, alpha=alpha, zorder=3)
+
+    perimeter_wm.boundary.plot(ax=ax, color="#222222", linewidth=1.5,
+                               linestyle="--", zorder=4)
+
+    ax.set_xlim(bxmin, bxmax)
+    ax.set_ylim(bymin, bymax)
+    _add_basemap(ax, zoom=16)
+
+    # Stats box
+    n_dest = (buildings_clip["damage_class"] == "destroyed").sum()
+    n_pa   = (buildings_clip["damage_class"] == "possibly_affected").sum()
+    n_nd   = (buildings_clip["damage_class"] == "no_damage").sum()
+    total  = len(buildings_clip)
+    ax.text(0.02, 0.98,
+            f"In view:   {total:,} buildings\n"
+            f"Destroyed: {n_dest:,}\n"
+            f"Possibly:  {n_pa:,}\n"
+            f"No damage: {n_nd:,}",
+            transform=ax.transAxes, fontsize=8.5, verticalalignment="top",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85))
+
+    classes_present = [c for c in ["destroyed", "possibly_affected", "no_damage", "no_data"]
+                       if (buildings_clip["damage_class"] == c).any()]
+    handles = _damage_legend_handles(classes_present)
+    handles.append(mpatches.Patch(color="#222222", label="Fire perimeter"))
+    ax.legend(handles=handles, loc="lower right", fontsize=9, framealpha=0.9)
+
+    ax.set_title(
+        f"SAR Building Damage — {event_title}  (zoom: {window_km:.1f} km)\n"
+        "Most-damaged neighbourhood · Sentinel-1 Track 64",
+        fontsize=11, fontweight="bold"
+    )
+    ax.set_axis_off()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Written: {output_path}")
+
+
 def run_visualisations(config=None):
     """
     Entry point. Loads all outputs from disk and generates all figures.
@@ -415,6 +631,30 @@ def run_visualisations(config=None):
         "data/external/calfire_dins_palisades.geojson",
         target_crs,
         os.path.join(FIGURES_DIR, "change_signal_dist.png")
+    )
+
+    print("6/9  SAR panel — Eaton")
+    plot_sar_panel(
+        "eaton", eaton_gdf,
+        os.path.join(FIGURES_DIR, "sar_panel_eaton.png")
+    )
+
+    print("7/9  SAR panel — Palisades")
+    plot_sar_panel(
+        "palisades", palisades_gdf,
+        os.path.join(FIGURES_DIR, "sar_panel_palisades.png")
+    )
+
+    print("8/9  Damage zoom — Eaton")
+    plot_damage_zoom(
+        "eaton", eaton_gdf, eaton_perim,
+        os.path.join(FIGURES_DIR, "damage_zoom_eaton.png")
+    )
+
+    print("9/9  Damage zoom — Palisades")
+    plot_damage_zoom(
+        "palisades", palisades_gdf, palisades_perim,
+        os.path.join(FIGURES_DIR, "damage_zoom_palisades.png")
     )
 
     print(f"\nAll figures written to {FIGURES_DIR}/")

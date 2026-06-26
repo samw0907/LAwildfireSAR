@@ -39,6 +39,14 @@ Both fires are among the most destructive in California history. The Eaton fire 
 | No Damage | 1,468 | 15.7% |
 | No Data (below resolution) | 3,985 | 42.7% |
 
+### Eaton Fire — Zoom (most-damaged neighbourhood, 2.5 km)
+
+![Eaton Damage Zoom](outputs/figures/damage_zoom_eaton.png)
+
+### Palisades Fire — Zoom (most-damaged neighbourhood, 2.5 km)
+
+![Palisades Damage Zoom](outputs/figures/damage_zoom_palisades.png)
+
 ### Combined Overview
 
 ![Combined Damage Map](outputs/figures/damage_map_combined.png)
@@ -61,6 +69,18 @@ Buildings with no SAR signal (`no_data` and `geometry_limited` classes) are **ex
 | Palisades | 0.723 | 0.893 | 0.799 | 0.736 | 6,220 buildings |
 
 F1 ≈ 0.80 for both events is consistent with published Sentinel-1 urban damage mapping results (UNOSAT, JRC, Copernicus EMS typically report F1 0.72–0.85 at 20m resolution). The asymmetry between precision and recall (recall notably higher at 87–89%) is an intentional outcome of threshold calibration: in an emergency response context, missing damage (false negative) carries a higher cost than a false alarm (false positive). The threshold was calibrated by sweeping 0.5–10.0 dB in 0.1 dB steps and selecting the F1-maximising value rather than using an arbitrary fixed threshold.
+
+### SAR Imagery — Pre / Post / Change (Eaton Fire)
+
+![SAR Panel Eaton](outputs/figures/sar_panel_eaton.png)
+
+The three panels show the raw SAR signal the algorithm works from. Left: pre-event gamma-nought VV backscatter (Dec 2024) with building outlines in white. Centre: post-event backscatter (Jan–Feb 2025) with building outlines coloured by damage class — red outlines mark structures that disappeared or were significantly altered. Right: combined VV+VH change magnitude overlaid with filled building polygons, showing the direct relationship between the SAR signal and the classification output.
+
+### SAR Imagery — Pre / Post / Change (Palisades Fire)
+
+![SAR Panel Palisades](outputs/figures/sar_panel_palisades.png)
+
+The Palisades area shows characteristic SAR terrain effects — the bright/dark banding in the canyon areas reflects geometric distortion from the coastal bluff topography. Damaged residential areas along the Pacific Palisades coast are clearly identified in the change panel despite the more complex terrain.
 
 ### SAR Change Signal Separability
 
