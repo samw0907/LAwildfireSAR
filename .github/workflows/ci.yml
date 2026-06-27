@@ -30,8 +30,9 @@ jobs:
           python -m pip install --upgrade pip
           GDAL_VERSION=$(gdal-config --version)
           pip install GDAL==${GDAL_VERSION}
-          pip install flake8 pyyaml python-dotenv pytest
-          grep -v "^GDAL" requirements.txt | pip install -r /dev/stdin
+          pip install flake8 pytest pyyaml python-dotenv numpy scipy
+          pip install rasterio geopandas rasterstats shapely matplotlib contextily boto3
+          pip install pyroSAR spatialist
 
       - name: Lint with flake8
         run: |
