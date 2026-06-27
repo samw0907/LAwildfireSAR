@@ -30,7 +30,7 @@ jobs:
           python -m pip install --upgrade pip
           GDAL_VERSION=$(gdal-config --version)
           pip install GDAL==${GDAL_VERSION}
-          pip install flake8
+          pip install flake8 pyyaml python-dotenv
           grep -v "^GDAL" requirements.txt | pip install -r /dev/stdin
 
       - name: Lint with flake8
