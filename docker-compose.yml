@@ -1,0 +1,21 @@
+# docker-compose.yml
+services:
+  pipeline:
+    build: .
+    volumes:
+      # Credentials — read only, never in image
+      - ./config/.env:/app/config/.env:ro
+      - ./config/gee-service-account.json:/app/config/gee-service-account.json:ro
+      # Data directories
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+
+  test:
+    build: .
+    command: python -m pytest tests/unit/ -v
+    volumes:
+      - ./config/pipeline_config.yaml:/app/config/pipeline_config.yaml:ro
