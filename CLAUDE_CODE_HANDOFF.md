@@ -1,230 +1,225 @@
 # Claude Code Handoff — LA Wildfire SAR Project
-## Status as of 2026-06-26 — Root Cause Fixed, Methodology Improved, Re-run In Progress
+## Status as of 2026-06-26 — PIPELINE AND OUTPUTS COMPLETE
+
+This file is the handoff document for the next Claude Code session.
+Read this fully before doing anything. The project is in a clean, complete state.
+The primary outstanding task is **S3 output sync**, which was always planned but not yet implemented.
 
 ---
 
 ## Project Overview
 
 Production-grade SAR wildfire damage assessment pipeline built in Python.
-Processes Sentinel-1 SAR data to detect building-level damage from the January 2025
-LA wildfires (Eaton and Palisades fires). The pipeline:
+Detects building-level structural damage from the January 2025 LA wildfires (Eaton and Palisades fires)
+using free Sentinel-1 SAR imagery, validated against CAL FIRE DINS ground truth.
 
-1. Downloads Sentinel-1 IW GRD scenes from CDSE
-2. Processes to RTC backscatter via pyroSAR/SNAP
-3. Builds pre/post composites
-4. Computes log-ratio change detection
-5. Classifies building-level damage via rasterstats zonal statistics
-6. Validates against CAL FIRE DINS ground truth
+Portfolio piece targeting ICEYE GIS Operational Analyst role — methodology and documentation
+are written to that standard throughout.
 
----
-
-## Repository
-
-github.com/samw0907/LAwildfireSAR
-Local path: C:\Users\swill\dev\LAwildfireSAR
+**Repo:** github.com/samw0907/LAwildfireSAR  
+**Local:** `C:\Users\swill\dev\LAwildfireSAR`  
+**Python:** 3.14 on Windows. Run all scripts from project root. Use `python -m pip install`, not `pip install`.  
+**SNAP GPT** must be on PATH for RTC processing (already done; data is already processed).
 
 ---
 
-## Current Pipeline Status — COMPLETE (2026-06-26)
+## Everything Completed This Session
 
-All pipeline stages have run to completion and converged. No further processing needed.
+### Pipeline stages — all complete, outputs on disk
 
 ```
-[✓] Download + SNAP RTC       6 × Track 64 scenes processed
-[✓] Composite                 Pre/post VV+VH, master reference grid, median stack
-[✓] Change detection          change_combined.tif, burn_perimeter_full.geojson
-[✓] Buildings                 building_damage_eaton.geojson, building_damage_palisades.geojson
-[✓] Validate                  Threshold calibrated (3.0 → 2.9 dB), converged, no re-run needed
+[✓] Download + SNAP RTC     6 × Sentinel-1 Track 64 scenes
+[✓] Composite               Pre/post VV+VH, median stack, single master reference grid
+[✓] Change detection        change_combined.tif, burn_perimeter_full.geojson
+[✓] Buildings               building_damage_eaton.geojson, building_damage_palisades.geojson
+[✓] Validate                Threshold calibrated 3.0 → 2.9 dB, converged
+[✓] Visualisations          9 figures in outputs/figures/
+[✓] README.md               Comprehensive portfolio README with all figures embedded
 ```
 
-### Final Validation Metrics (2.9 dB threshold)
+### Final validation results (2.9 dB calibrated threshold)
 
 | Event | Precision | Recall | F1 | Accuracy | Validated on |
 |-------|-----------|--------|----|----------|--------------|
 | Eaton | 0.749 | 0.868 | 0.804 | 0.732 | 5,992 buildings |
 | Palisades | 0.723 | 0.893 | 0.799 | 0.736 | 6,220 buildings |
 
-Excluded from metrics: 7,904 Eaton and 4,516 Palisades matched buildings with no SAR signal (no_data / geometry_limited).
-
-### Building Damage Counts (calibrated 2.9 dB)
+### Building damage counts
 
 | Event | Destroyed | Possibly Affected | No Damage | No Data | Total |
 |-------|-----------|-------------------|-----------|---------|-------|
 | Eaton | 2,126 | 1,198 | 1,156 | 6,047 | 10,527 |
 | Palisades | 2,583 | 1,307 | 1,468 | 3,985 | 9,343 |
 
----
-
-## Fix 1 — Eaton NaN Root Cause
-
-### What was wrong
-
-The pipeline was using **Sentinel-1 ascending Track 137** (orbit ~056909). At Eaton's
-latitude (~34.18°N), the IW3 sub-swath's last burst ends abruptly at **x ≈ 392,200m
-UTM 11N** — confirmed as a genuine acquisition gap by a single-pixel cliff from valid
-backscatter to exactly 0.0 across all 6 scenes. The Eaton fire perimeter begins at
-x = 392,938m — 738m east of this boundary. Every Eaton building returned NaN.
-
-Disabling `removeS1BorderNoise` would not help: the transition is a burst boundary,
-not noise removal. The 87% coverage figure in the old config was computed against
-the scene bounding box (which includes the nodata zone) — true valid coverage of
-Eaton under Track 137 was 0%.
-
-### Fix applied
-
-Switched to **ascending Track 64** (absolute orbits 056836, 057011, etc.).
-Track 64 places Eaton in the near-to-mid range interior of the swath — well away from
-any IW3 far-range burst edge. Both fires are covered by the same imagery.
-
-New scene dates:
-```yaml
-pre:  ["2024-12-04", "2024-12-16", "2024-12-28"]   # 34/22/10 days pre-fire
-post: ["2025-01-21", "2025-02-02", "2025-02-14"]   # 14/26/38 days post-fire
-```
-
-Jan 21 chosen as first post scene (not Jan 9) so the active-suppression phase is over
-and structural backscatter has stabilised. The 14–38 day post window is methodologically
-standard for SAR NatCat damage assessment.
+No data rate (~50%) is an inherent Sentinel-1 20m resolution limitation — buildings without
+a pixel centroid within their footprint cannot be classified. Documented in README as per
+UNOSAT/Copernicus EMS standard practice. `all_touched=True` and buffering were considered
+and rejected (neighbourhood backscatter contamination — not industry standard).
 
 ---
 
-## Fix 2 — Composite Spatial Misregistration
+## Output Figures (outputs/figures/)
 
-### What was wrong
+| File | Contents |
+|------|----------|
+| `damage_map_eaton.png` | Full perimeter, buildings coloured by damage class, statistics inset |
+| `damage_map_palisades.png` | Same for Palisades |
+| `damage_zoom_eaton.png` | 2.5 km zoom on most-damaged neighbourhood, individual polygons visible |
+| `damage_zoom_palisades.png` | Same for Palisades |
+| `damage_map_combined.png` | Both fires, geographic context, LA basin |
+| `sar_panel_eaton.png` | 3 panels: pre SAR backscatter / post SAR backscatter / change + classification |
+| `sar_panel_palisades.png` | Same for Palisades |
+| `validation_metrics.png` | Confusion matrices + precision/recall/F1 bars |
+| `change_signal_dist.png` | Violin plots: SAR signal separability by DINS damage category |
 
-`composite.py` used each time period's first scene as the reference grid for that
-composite. Pre and post composites ended up on different spatial origins (~136m
-offset, ~7 pixels at 20m spacing), meaning `change.py` subtracted spatially
-misaligned arrays.
-
-### Fix applied
-
-All four composites (pre/post × VV/VH) now aligned to a **single master reference
-grid** — the first pre-event VV scene. The master grid is established once in
-`run_composites` and passed as `ref_profile` to every `build_composite` call.
-
----
-
-## Improvement 1 — Median Composite
-
-**File:** `src/pipeline/composite.py`
-
-Changed `np.nanmean` → `np.nanmedian` in the composite stacking.
-
-**Why:** Median is more robust than mean to a single anomalous scene — for example,
-a rainfall event causing wet-soil backscatter spikes in one acquisition. With 3
-scenes, the median is simply the middle value, which discards any single outlier.
-This is standard practice in multi-temporal SAR compositing.
-
----
-
-## Improvement 2 — Local Incidence Angle Flagging
-
-**File:** `src/pipeline/buildings.py`
-
-Added `find_lia_file` and `flag_geometry_limited` functions. After the initial
-damage classification, buildings are sampled against the local incidence angle (LIA)
-raster already produced during RTC processing (`localIncidenceAngle.tif`). Buildings
-where mean LIA > 60° have their `damage_class` overridden to `geometry_limited`.
-
-**Why:** At high incidence angles, the terrain faces away from the radar — the
-building sits in shadow or a layover zone and the backscatter signal is geometrically
-distorted. Classifying these buildings as damaged or undamaged based on SAR change
-is unreliable. Flagging them explicitly allows downstream users to apply appropriate
-caveats rather than treating the classification as valid. The `mean_lia` value is
-retained in the output GeoJSON for QA.
-
-The LIA raster is a geometric property of orbit + terrain (not scene content), so
-any single scene's LIA file is representative of the whole time series. The pipeline
-uses the first pre-event scene's LIA file.
-
-**New damage class in output:** `geometry_limited` (alongside `destroyed`,
-`possibly_affected`, `no_damage`, `no_data`)
-
----
-
-## Improvement 3 — Exclude No-Signal Buildings from Validation
-
-**File:** `src/pipeline/validate.py`
-
-Buildings with `damage_class` in `{"no_data", "geometry_limited"}` are now excluded
-from the matched set before computing precision/recall/F1. The count of excluded
-buildings is reported in the metrics output.
-
-**Why:** The original code mapped `no_data` → 0 (not damaged) in the binary
-classification. Any building the SAR cannot see — due to acquisition gaps, shadow,
-or layover — would be counted as confirmed undamaged, silently deflating the
-false-negative count and artificially inflating recall. These buildings should be
-excluded from the denominator entirely; absence of signal is not evidence of absence
-of damage.
-
----
-
-## Improvement 4 — Automated Threshold Calibration
-
-**File:** `src/pipeline/validate.py`
-
-Added `calibrate_threshold` function that sweeps `threshold_combined_db` from 0.5
-to 10.0 dB in 0.1 dB steps, re-classifying buildings at each step using the
-pre-computed `mean_change_combined` values (no raster re-sampling needed). The
-F1-maximising threshold is identified and:
-
-- Reported alongside the metrics at the initial threshold
-- Written back to `config/pipeline_config.yaml` automatically
-- A prompt is printed to re-run `buildings.py` with the calibrated value
-
-**Why:** The original config note said `threshold_combined_db: 3.0 # initial value,
-calibrated in validation step` but the calibration step never existed. An arbitrary
-threshold is not defensible in a professional pipeline. F1 maximisation balances
-precision and recall — appropriate for a damage assessment where both missing damage
-(false negative) and overcounting it (false positive) have operational consequences.
-
-If the application context required prioritising one (e.g. emergency response = maximise
-recall to avoid missing damage), the calibration function accepts a custom scoring
-function and can be adapted accordingly.
-
-The full threshold sweep is stored in the metrics dict for plotting if needed
-(excluded from the JSON summary to keep it readable).
-
----
-
-## All Files Changed in This Session
-
-| File | Change |
-|------|--------|
-| `config/pipeline_config.yaml` | Track 64 dates; Eaton coverage 100%; calibrated threshold written here by validate.py |
-| `src/pipeline/composite.py` | Single master reference grid; nanmean → nanmedian |
-| `src/pipeline/buildings.py` | LIA flagging (geometry_limited class); find_lia_file; flag_geometry_limited |
-| `src/pipeline/validate.py` | no_data/geometry_limited excluded from metrics; calibrate_threshold; update_config_threshold |
-| `scripts/search_all_tracks.py` | New — searches CDSE for all tracks over study area |
-| `scripts/check_track64_coverage.py` | New — verified Track 64 and 71 scene availability and footprints |
+All figures are referenced in README.md.
 
 ---
 
 ## Data State
 
 ```
-data/raw/       6 × Track 64 SAFE zips ✓ (Dec 4/16/28, Jan 21, Feb 2/14)
-                6 × Track 137 SAFE zips also present — safe to leave (no filename overlap)
-data/rtc/       18 × Track 64 TIFs ✓ (VV + VH + localIncidenceAngle per scene)
-                Track 137 RTC TIFs also present — no overlap with Track 64 date strings
-data/analysis/  pre/post composites VV+VH ✓, change_combined.tif ✓
-data/vectors/   building_damage_eaton.geojson ✓, building_damage_palisades.geojson ✓
-                burn_perimeter_full.geojson ✓
-data/validation/ validation_summary.json ✓
+data/raw/           6 × Track 64 SAFE zips ✓ + 6 × old Track 137 zips (safe to leave)
+data/rtc/           18 × Track 64 TIFs ✓ (VV + VH + localIncidenceAngle per scene)
+                    Old Track 137 RTC TIFs also present — no date overlap, no conflict
+data/analysis/      pre/post composites VV+VH ✓, change_combined.tif ✓
+data/vectors/       building_damage_eaton.geojson ✓
+                    building_damage_palisades.geojson ✓
+                    burn_perimeter_full.geojson ✓
+data/validation/    validation_summary.json ✓
+outputs/figures/    9 PNG figures ✓
+README.md           ✓
 ```
 
 ---
 
-## Sanity Check — Eaton Coverage (PASSED)
+## OUTSTANDING TASK — S3 Output Sync
 
-Verified Track 64 pre-composite VV at three Eaton building centroids:
-- (405941, 3782306) → -8.68 dB ✓
-- (405843, 3782092) → -7.35 dB ✓
-- (405754, 3782255) → -6.11 dB ✓
+This was planned from the start (AWS config already in `config/pipeline_config.yaml`) but not yet implemented.
 
-Valid data extends to x=582,225m at Eaton latitude (Eaton eastern edge is x≈406,646m).
-These same pixels returned NaN under Track 137 — fix confirmed.
+### Config already in place
+
+```yaml
+aws:
+  bucket: sam-sar-wildfire
+  prefix: la-wildfires-2025
+  region: eu-north-1
+```
+
+`boto3` is already installed. AWS credentials will need to be in `.env` or `~/.aws/credentials`.
+
+### What needs to be built
+
+A `scripts/sync_to_s3.py` (or `src/pipeline/s3_sync.py`) that uploads the final outputs to S3.
+The scope of what to sync is a decision for the next session — options:
+
+1. **Outputs only** (recommended starting point) — upload `outputs/figures/`, `data/vectors/`, `data/validation/`
+2. **Full pipeline outputs** — also include `data/analysis/` (composites, change raster ~several GB)
+3. **Everything** — including `data/rtc/` (~30+ GB, probably not needed in S3)
+
+Suggested structure on S3:
+```
+s3://sam-sar-wildfire/la-wildfires-2025/
+    vectors/
+        building_damage_eaton.geojson
+        building_damage_palisades.geojson
+        burn_perimeter_full.geojson
+    validation/
+        validation_summary.json
+    figures/
+        damage_map_eaton.png
+        damage_map_palisades.png
+        damage_zoom_eaton.png
+        damage_zoom_palisades.png
+        damage_map_combined.png
+        sar_panel_eaton.png
+        sar_panel_palisades.png
+        validation_metrics.png
+        change_signal_dist.png
+    analysis/          (optional — large files)
+        change_combined.tif
+        pre_composite_VV.tif
+        post_composite_VV.tif
+        pre_composite_VH.tif
+        post_composite_VH.tif
+```
+
+The sync script should:
+- Use `boto3` with the bucket/prefix/region from `pipeline_config.yaml`
+- Support a `--dry-run` flag to list what would be uploaded without uploading
+- Skip files already on S3 if the local MD5/ETag matches (avoid re-uploading unchanged files)
+- Print progress per file
+- Handle large GeoTIFF uploads gracefully (multipart upload for files > 100 MB)
+
+---
+
+## Key Methodology Decisions Made This Session (for context)
+
+### Fix 1 — Eaton NaN root cause
+Track 137 IW3 burst boundary at x≈392,200m UTM 11N; Eaton perimeter starts at x=392,938m.
+Switched to **Track 64** which places both fires in swath interior. Full coverage confirmed.
+
+**New scenes:** Pre 2024-12-04/16/28, Post 2025-01-21/02-02/02-14  
+(Jan 21 not Jan 9 — avoids active suppression phase, consistent with operational practice)
+
+### Fix 2 — Composite spatial misregistration
+Pre and post composites had ~136m (~7 pixel) origin offset. Fixed by establishing one master
+reference grid (first pre-event VV scene) and reprojecting all four composites to it.
+
+### Improvement 1 — Median composite
+`nanmean` → `nanmedian` for robustness against single anomalous scenes.
+
+### Improvement 2 — LIA flagging
+Buildings with mean LIA > 60° flagged as `geometry_limited` (excluded from validation).
+Zero flagged in this study — flat alluvial/coastal terrain. Code is correct for steep-terrain events.
+
+### Improvement 3 — No-signal exclusion from validation
+`no_data` and `geometry_limited` excluded from DINS matching denominator.
+Prior code mapped `no_data` → "not damaged", silently deflating false negatives.
+
+### Improvement 4 — Threshold calibration
+F1-maximising sweep 0.5–10.0 dB in 0.1 dB steps. Optimal: 2.7 dB (Eaton), 3.1 dB (Palisades),
+mean 2.9 dB written to config. Per-event thresholds discussed and deferred — marginal F1 gain (<0.005).
+
+### `all_touched=True` decision
+Considered for reducing no_data rate. Rejected — not industry standard at 20m resolution,
+causes neighbourhood backscatter contamination for small buildings. Documented as limitation in README.
+
+---
+
+## Files Changed This Session
+
+| File | What changed |
+|------|-------------|
+| `config/pipeline_config.yaml` | Track 64 dates; Eaton swath_coverage_pct 87→100; calibrated threshold 3.0→2.9 dB |
+| `src/pipeline/composite.py` | Single master reference grid; nanmean→nanmedian |
+| `src/pipeline/buildings.py` | LIA flagging: `find_lia_file`, `flag_geometry_limited`, `geometry_limited` class |
+| `src/pipeline/validate.py` | Full rewrite: no_data exclusion, `calibrate_threshold`, `update_config_threshold` |
+| `scripts/visualise.py` | New: all 9 figures (damage maps, SAR panels, zoom maps, validation, signal dist) |
+| `scripts/search_all_tracks.py` | New: CDSE track search utility |
+| `scripts/check_track64_coverage.py` | New: verified Track 64/71 footprints |
+| `README.md` | New: comprehensive portfolio README with methodology, results, all figures |
+
+---
+
+## Running the Pipeline from Scratch
+
+If any stage needs to be re-run (unlikely — all outputs are on disk):
+
+```bash
+# Data already downloaded and processed — skip this unless starting fresh
+python -m scripts.run_processing
+
+python -m src.pipeline.composite
+python -m src.pipeline.change
+python -m src.pipeline.buildings      # ~15-20 min (3.5 GB building footprint load)
+python -m src.pipeline.validate       # writes calibrated threshold to config
+# If validate changed the threshold, re-run buildings then validate once more:
+# del data/vectors/building_damage_*.geojson
+# python -m src.pipeline.buildings
+# python -m src.pipeline.validate
+python -m scripts.visualise
+```
 
 ---
 
@@ -237,7 +232,4 @@ boto3 / matplotlib / contextily / python-dotenv / pyyaml
 gdal==3.12.2 (installed via wheel)
 ```
 
-Python 3.14 on Windows. SNAP GPT on PATH.
-Run all scripts from project root: `C:\Users\swill\dev\LAwildfireSAR`
-Use `python -m pip install` not `pip install`.
-Never commit data/ directories.
+Never commit `data/` directories. `.env` holds CDSE and AWS credentials.
