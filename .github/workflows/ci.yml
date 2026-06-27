@@ -1,0 +1,54 @@
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev python3-gdal
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install GDAL==$(gdal-config --version)
+          pip install flake8
+          pip install -r requirements.txt
+
+      - name: Lint with flake8
+        run: |
+          # Stop build on syntax errors or undefined names
+          flake8 src/ scripts/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          # Warn on style issues but do not fail
+          flake8 src/ scripts/ --count --max-line-length=100 --statistics --exit-zero
+
+      - name: Validate config
+        run: |
+          python -m scripts.validate_config
+
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/unit/ -v
+        env:
+          CDSE_USER: ${{ secrets.CDSE_USER }}
+          CDSE_PASSWORD: ${{ secrets.CDSE_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
