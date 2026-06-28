@@ -2,10 +2,6 @@
 config/.env
 config/gee-service-account.json
 
-# data (large files, not committed)
-data/raw/
-data/rtc/
-
 # python
 __pycache__/
 *.pyc
@@ -13,12 +9,15 @@ __pycache__/
 .venv/
 venv/
 
-# data outputs
+# data outputs — not committed, large files or pipeline outputs
 data/raw/
 data/rtc/
 data/analysis/
 data/vectors/
 data/validation/
 
-# external data files - large, downloaded manually
+# external data files — large, downloaded manually
 data/external/
+
+# claude code handoff — internal working document
+CLAUDE_CODE_HANDOFF.md
